@@ -24,6 +24,7 @@ executable HEAD
                        Protocol
                        Protocol.V1
                        Protocol.V2
+                       Protocol.V2Compat
   -- other-extensions:
   build-depends:       base >=4.14 && <4.15
                      , bytestring
