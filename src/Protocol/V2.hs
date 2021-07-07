@@ -104,6 +104,7 @@ client = Effect $ do
   where
     recvPinged :: Message MyProtocol StPinged st -> Peer MyProtocol AsClient st IO ()
     recvPinged Pong = Effect $ do
+      putStrLn "Pong"
       putStrLn "Echo \"boop\""
       return (Yield (ClientAgency TokIdle) (Echo "boop") goEchoed)
 
@@ -129,10 +130,12 @@ server = goIdle
 
     recvIdle :: Message MyProtocol StIdle st -> Peer MyProtocol AsServer st IO ()
     recvIdle Ping = Effect $ do
+      putStrLn "Ping"
       putStrLn "Pong"
       return (Yield (ServerAgency TokPinged) Pong goIdle)
     recvIdle (Echo str) = Effect $ do
       putStrLn $ "Echo " ++ show str
+      putStrLn $ "EchoResp " ++ show str
       return (Yield (ServerAgency TokEchoed) (EchoResp str) goIdle)
     recvIdle Stop = goDone
 

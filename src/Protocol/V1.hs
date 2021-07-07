@@ -81,9 +81,11 @@ client = Effect $ do
       recvPinged_2 ::
         Message MyProtocol StPinged st -> Peer MyProtocol AsClient st IO ()
     recvPinged_ Pong = Effect $ do
+      putStrLn "Pong"
       putStrLn "Ping"
       return (Yield (ClientAgency TokIdle) Ping goPinged_)
     recvPinged_2 Pong = Effect $ do
+      putStrLn "Pong"
       putStrLn "Done"
       return (Yield (ClientAgency TokIdle) Stop goDone)
 
@@ -102,6 +104,7 @@ server = goIdle
 
     recvIdle :: Message MyProtocol StIdle st -> Peer MyProtocol AsServer st IO ()
     recvIdle Ping = Effect $ do
+      putStrLn "Ping"
       putStrLn "Pong"
       return (Yield (ServerAgency TokPinged) Pong goIdle)
     recvIdle Stop = goDone
