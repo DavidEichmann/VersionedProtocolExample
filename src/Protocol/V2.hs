@@ -19,10 +19,7 @@ import qualified Codec.Serialise.Decoding as S
 import qualified Codec.Serialise.Encoding as S
 import Core
 import Core.Run
-import Data.Kind
 import Data.Text
-import Data.Void
-import System.Environment (getArgs)
 
 ---------------------------------------------------------------
 -- Protocol
@@ -92,7 +89,7 @@ codec (ServerAgency _) (SomeMessage Echo {}) = error "unexpected message"
 codec (ServerAgency tok) (SomeMessage Pong) = case tok of
   TokPinged -> SomeMessageInSt Pong
   _ -> error "unexpected message"
-codec (ServerAgency tok) (SomeMessage msg@(EchoResp str)) = case tok of
+codec (ServerAgency tok) (SomeMessage msg@(EchoResp {})) = case tok of
   TokEchoed -> SomeMessageInSt msg
   _ -> error "unexpected message"
 codec (ServerAgency _) (SomeMessage Stop) = error "unexpected message"

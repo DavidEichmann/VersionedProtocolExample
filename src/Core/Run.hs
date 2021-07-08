@@ -16,14 +16,12 @@ module Core.Run where
 import qualified Codec.Serialise as S
 import Control.Monad.ST
   ( RealWorld,
-    runST,
     stToIO,
   )
 import Core
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as BS
 import Data.Maybe (fromJust)
-import Data.Typeable
 import Network.Simple.TCP
 
 port :: ServiceName

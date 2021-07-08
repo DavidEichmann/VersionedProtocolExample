@@ -62,6 +62,7 @@ downgradeServerV2ToV1 server2Top = goIdle server2Top
             V1.Pong
             (goIdle server2')
 
+-- This is not so realistic!
 downgradeClientV2ToV1 ::
   forall m a.
   Monad m =>
@@ -74,7 +75,7 @@ downgradeClientV2ToV1 server2Top = goIdle server2Top
       Peer V1.MyProtocol AsClient V1.StIdle m a
     goIdle client2 = case client2 of
       Effect eff -> Effect (goIdle <$> eff)
-      Yield (ClientAgency tok) msg client2' -> case msg of
+      Yield (ClientAgency _) msg client2' -> case msg of
         V2.Ping -> Yield (ClientAgency V1.TokIdle) V1.Ping (goPinged client2')
         V2.Stop -> Yield (ClientAgency V1.TokIdle) V1.Stop (goStopped client2')
         V2.Echo txt -> goEchoed txt client2'

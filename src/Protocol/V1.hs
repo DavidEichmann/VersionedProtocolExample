@@ -16,9 +16,6 @@ module Protocol.V1 where
 import qualified Codec.Serialise as S
 import Core
 import Core.Run
-import Data.Kind
-import Data.Void
-import System.Environment (getArgs)
 
 ---------------------------------------------------------------
 -- Protocol

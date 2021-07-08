@@ -38,7 +38,6 @@ module Core
   )
 where
 
-import Data.Typeable (Typeable)
 import Data.Void (Void)
 
 -- $intro
@@ -245,7 +244,11 @@ data SomeMessage protocol = forall (st :: protocol) (st' :: protocol). SomeMessa
 
 data SomeMessageInSt protocol st = forall (st' :: protocol). SomeMessageInSt (Message protocol st st')
 
-type MessageDecoder protocol = forall pr (st :: protocol). PeerHasAgency pr st -> SomeMessage protocol -> SomeMessageInSt protocol st
+type MessageDecoder protocol =
+  forall pr (st :: protocol).
+  PeerHasAgency pr st ->
+  SomeMessage protocol ->
+  SomeMessageInSt protocol st
 
 -- | The protocol type class bundles up all the requirements for a typed
 -- protocol.

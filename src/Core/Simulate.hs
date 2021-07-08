@@ -12,10 +12,6 @@
 module Core.Simulate where
 
 import Core
-import Core.Run
-import Data.Kind
-import Data.Void
-import System.Environment (getArgs)
 
 simulate ::
   forall protocol st m result.
@@ -47,7 +43,7 @@ simulate client server = do
               m (Peer protocol AsServer st' m result)
             continueServer server' = case server' of
               Effect effectServer -> continueServer =<< effectServer
-              Done noAgency serverResult ->
+              Done noAgency _serverResult ->
                 case exclusionLemma_NobodyAndClientHaveAgency
                   noAgency
                   clientAgency of
@@ -57,13 +53,13 @@ simulate client server = do
                   clientAgency
                   serverAgency of
 
-              Await _ server' -> return (server' msg)
+              Await _ server'' -> return (server'' msg)
         continueServer server
     Await (ServerAgency serverAgency) client' -> do
       let awaitServer :: Peer protocol AsServer st m result -> m (result, result)
           awaitServer server' = case server' of
             Effect effectServer -> awaitServer =<< effectServer
-            Done noAgency serverResult ->
+            Done noAgency _serverResult ->
               case exclusionLemma_NobodyAndServerHaveAgency noAgency serverAgency of
             Yield _ msg server'' -> simulate (client' msg) server''
             Await (ClientAgency clientAgency) _ ->
