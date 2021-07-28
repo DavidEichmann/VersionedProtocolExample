@@ -11,6 +11,6 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Protocol (module Protocol.V1) where
+module Protocol (module Protocol.V2) where
 
-import Protocol.V1
+import Protocol.V2

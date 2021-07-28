@@ -24,6 +24,9 @@ import System.Environment (getArgs)
 -- Protocol
 ---------------------------------------------------------------
 
+protocolVersion :: ProtocolVersion
+protocolVersion = ProtocolVersion 1
+
 data MyProtocol
   = StIdle -- Server is waiting for ping message
   | StPinged -- Server has received a ping message
