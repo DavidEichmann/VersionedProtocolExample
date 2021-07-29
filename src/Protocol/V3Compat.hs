@@ -73,3 +73,51 @@ downgradeServerV3ToV2 server3Top = goIdle server3Top
             (ServerAgency V2.TokEchoed)
             (V2.EchoResp txt)
             (goIdle server3')
+
+upgradeClientV2ToV3 ::
+  forall m a.
+  Monad m =>
+  Peer V2.MyProtocol AsClient V2.StIdle m a ->
+  Peer V3.MyProtocol AsClient V3.StIdle m a
+upgradeClientV2ToV3 client2Top = goIdle client2Top
+  where
+    goIdle ::
+      Peer V2.MyProtocol 'AsClient 'V2.StIdle m a ->
+      Peer V3.MyProtocol 'AsClient 'V3.StIdle m a
+    goIdle client2 = case client2 of
+      Effect eff -> Effect (goIdle <$> eff)
+      Yield (ClientAgency V2.TokIdle) msg client2' -> case msg of
+        V2.Ping -> Yield (ClientAgency V3.TokIdle) V3.Ping (goPinged client2')
+        V2.Echo txt -> Yield (ClientAgency V3.TokIdle) (V3.Echo txt) (goEchoed client2')
+        V2.Stop -> Yield (ClientAgency V3.TokIdle) V3.Stop (goDone client2')
+
+    goDone ::
+      Peer V2.MyProtocol 'AsClient 'V2.StDone m a ->
+      Peer V3.MyProtocol 'AsClient 'V3.StDone m a
+    goDone client2 = case client2 of
+      Effect eff -> Effect (goDone <$> eff)
+      Done _ a -> Done V3.TokDone a
+
+    goPinged ::
+      Peer V2.MyProtocol 'AsClient 'V2.StPinged m a ->
+      Peer V3.MyProtocol 'AsClient 'V3.StPinged m a
+    goPinged client2 = case client2 of
+      Effect eff -> Effect (goPinged <$> eff)
+      Await (ServerAgency V2.TokPinged) client2' ->
+        Await
+          (ServerAgency V3.TokPinged)
+          ( \msg3 -> case msg3 of
+              V3.Pong -> goIdle (client2' (V2.Pong))
+          )
+
+    goEchoed ::
+      Peer V2.MyProtocol 'AsClient 'V2.StEchoed m a ->
+      Peer V3.MyProtocol 'AsClient 'V3.StEchoed m a
+    goEchoed client2 = case client2 of
+      Effect eff -> Effect (goEchoed <$> eff)
+      Await (ServerAgency V2.TokEchoed) client2' ->
+        Await
+          (ServerAgency V3.TokEchoed)
+          ( \msg3 -> case msg3 of
+              V3.EchoResp txt -> goIdle (client2' (V2.EchoResp txt))
+          )
