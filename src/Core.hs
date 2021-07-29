@@ -38,6 +38,7 @@ module Core
   )
 where
 
+import Data.Typeable
 import Data.Void (Void)
 
 -- $intro
@@ -452,5 +453,17 @@ data Peer ps (pr :: PeerRole) (st :: ps) m a where
     !(TheyHaveAgency pr st) ->
     (forall st'. Message ps st st' -> Peer ps pr st' m a) ->
     Peer ps pr st m a
+  TryChangeVersion ::
+    ( Typeable psB,
+      Typeable prB,
+      Typeable stB,
+      Typeable psA,
+      Typeable prA,
+      Typeable stA,
+      Typeable m
+    ) =>
+    Peer psB prB stB m a ->
+    Peer psA prA stA m a ->
+    Peer psA prA stA m a
 
 deriving instance Functor m => Functor (Peer ps (pr :: PeerRole) (st :: ps) m)
