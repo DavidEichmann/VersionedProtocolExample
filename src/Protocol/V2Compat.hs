@@ -77,8 +77,8 @@ upgradeClientV1ToV2 server1Top = goIdle server1Top
       Yield (ClientAgency _) msg client1' -> case msg of
         V1.Ping -> Yield (ClientAgency V2.TokIdle) V2.Ping (goPinged client1')
         V1.Stop -> Yield (ClientAgency V2.TokIdle) V2.Stop (goStopped client1')
-      TryChangeVersion px p1 -> case cast px of
-        Just (p2' :: Peer V2.MyProtocol AsClient V2.StIdle m a) -> p2' -- alt version is V2 so use that
+      TryChangeVersion _ px p1 -> case cast px of
+        Just (p2' :: Peer V2.MyProtocol AsClient V2.StIdle m a) -> applyUpgrade p2' -- alt version is V2 so use that
         Nothing -> case cast px of
           Just (p1' :: Peer V1.MyProtocol AsClient V1.StIdle m a) -> goIdle p1'
           Nothing -> goIdle p1

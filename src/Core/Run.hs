@@ -148,3 +148,5 @@ runPeer msgDecoder recvBuff socket peer = case peer of
               recvMsg recvBuff'' idecode'
             S.Fail {} -> error "FAILED to deserialise a message!"
     (recvMsg recvBuff =<< stToIO S.deserialiseIncremental)
+  -- Too late to change versions... that should be handled by the upgrade function.
+  TryChangeVersion _ _ peer' -> runPeer msgDecoder recvBuff socket peer'

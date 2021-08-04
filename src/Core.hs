@@ -1,5 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -9,6 +11,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeInType #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 -- | This module defines the core of the typed protocol framework.
 module Core
@@ -35,9 +38,18 @@ module Core
     -- * Protocol proofs and tests
     -- $tests
     -- $lemmas
+
+    -- * Peer protocol transformations
+    PeerTransformer (..),
+    -- applyChangeVersion,
+    applyChangeVersionWith,
+    Upgradeable1 (..),
+    Upgradeable (..),
   )
 where
 
+import Data.Kind
+import Data.Maybe (fromMaybe)
 import Data.Typeable
 import Data.Void (Void)
 
@@ -287,6 +299,13 @@ class Protocol ps where
   -- server has agency.
   data NobodyHasAgency (st :: ps)
 
+  -- TODO we want to enforce:
+  --   NextVersion (PreviousVersion p) == p
+  --   PreviousVersion (NextVersion p) == p
+  type NextVersion ps
+
+  -- type PreviousVersion ps
+
   -- | Lemma that if the client has agency for a state, there are no
   -- cases in which the server has agency for the same state.
   exclusionLemma_ClientAndServerHaveAgency ::
@@ -455,15 +474,93 @@ data Peer ps (pr :: PeerRole) (st :: ps) m a where
     Peer ps pr st m a
   TryChangeVersion ::
     ( Typeable psB,
-      Typeable prB,
       Typeable stB,
       Typeable psA,
-      Typeable prA,
       Typeable stA,
       Typeable m
+      -- TODO
+      -- - this is an upgrade or downgrade (check using NextVersion)
+      -- - there exists a chain of upgrade or downgrade functions to
     ) =>
-    Peer psB prB stB m a ->
-    Peer psA prA stA m a ->
-    Peer psA prA stA m a
+    Proxy psB ->
+    Peer psB pr stB m a ->
+    Peer psA pr stA m a ->
+    Peer psA pr stA m a
 
 deriving instance Functor m => Functor (Peer ps (pr :: PeerRole) (st :: ps) m)
+
+-- class ConvertPeerStep p1 p2 r (s1 :: p1) (s2 :: p2) | p1 -> p2, s1 -> s2 where
+--   convertPeerStep ::
+--     Monad m =>
+--     Peer p1 r s1 m a ->
+--     Peer p2 r s2 m a
+
+-- -- | This will, where possible, remove @TryChangeVersion@ constructors with the
+-- -- translated version of the alternative branch.
+-- applyChangeVersion ::
+--   -- |
+--   Peer protocol r st m a ->
+--   -- | When an alternate branch is encountered (i.e. a @TryChangeVersion@
+--   -- constructor), then the alternate branch is cast with @Data.Typeable.cast@
+--   -- and if successful, transformed with the @PeerTransformer@ and subsumes the
+--   -- @TryChangeVersion@ constructor (effectively dropping the default branch).
+--   [PeerTransformer protocol] ->
+--   Peer protocol r st m a
+-- applyChangeVersion peer transformers = _
+
+-- | This will, where possible, remove @TryChangeVersion@ constructors with the
+-- translated version of the alternative branch.
+applyChangeVersionWith ::
+  forall protocol r st m a.
+  -- |
+  Peer protocol r st m a ->
+  -- | When an alternate branch is encountered (i.e. a @TryChangeVersion@
+  -- constructor), then the alternate branch is cast with @Data.Typeable.cast@
+  -- and if successful, transformed with the @PeerTransformer@ and subsumes the
+  -- @TryChangeVersion@ constructor (effectively dropping the default branch).
+  -- If the cast fails, then the @TryChangeVersion@ constructor is kept as is.
+  ( forall protocol' st'.
+    ( Typeable protocol',
+      Typeable st'
+    ) =>
+    Peer protocol' r st' m a ->
+    Maybe (Peer protocol r st m a)
+  ) ->
+  Peer protocol r st m a
+applyChangeVersionWith peer transform = case peer of
+  TryChangeVersion _ peer' _ -> fromMaybe peer (transform peer')
+  _ -> peer
+
+data PeerTransformer protocol
+  = forall protocol' r st st'.
+    ( Typeable protocol',
+      Typeable r,
+      Typeable st'
+    ) =>
+    PeerTransformer (forall m a. Peer protocol' r st' m a -> Peer protocol r st m a)
+
+class Upgradeable1 protocol (st :: protocol) where
+  type UpgradeState1 protocol st :: NextVersion protocol
+  upgrade1 ::
+    Peer protocol r st m a ->
+    Peer (NextVersion protocol) r (UpgradeState1 protocol st) m a
+
+type family UpgradeState (protocol :: Type) (st :: protocol) (protocol' :: Type) :: protocol' where
+  UpgradeState protocol st protocol = st
+  UpgradeState protocol st protocol' = UpgradeState (NextVersion protocol) (UpgradeState1 protocol st) protocol'
+
+class Upgradeable protocol (st :: protocol) protocol' where
+  upgrade ::
+    Peer protocol r st m a ->
+    Peer protocol' r (UpgradeState protocol st protocol') m a
+
+instance Upgradeable p st p where
+  upgrade = id
+
+instance
+  ( Upgradeable1 p st,
+    Upgradeable (NextVersion p) (UpgradeState1 p st) p'
+  ) =>
+  Upgradeable p st p'
+  where
+  upgrade peer = upgrade (upgrade1 peer)
