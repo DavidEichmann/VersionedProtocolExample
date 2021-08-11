@@ -8,7 +8,9 @@
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeInType #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -38,18 +40,17 @@ module Core
     -- * Protocol proofs and tests
     -- $tests
     -- $lemmas
-
-    -- * Peer protocol transformations
-    PeerTransformer (..),
-    -- applyChangeVersion,
-    applyChangeVersionWith,
-    Upgradeable1 (..),
-    Upgradeable (..),
+    PeerUpgrader (..),
+    upgradePeer,
+    -- -- * Peer protocol transformations
+    -- PeerTransformer (..),
+    -- -- applyChangeVersion,
+    -- applyChangeVersionWith,
+    -- Upgradeable1 (..),
+    -- Upgradeable (..),
   )
 where
 
-import Data.Kind
-import Data.Maybe (fromMaybe)
 import Data.Typeable
 import Data.Void (Void)
 
@@ -489,78 +490,129 @@ data Peer ps (pr :: PeerRole) (st :: ps) m a where
 
 deriving instance Functor m => Functor (Peer ps (pr :: PeerRole) (st :: ps) m)
 
--- class ConvertPeerStep p1 p2 r (s1 :: p1) (s2 :: p2) | p1 -> p2, s1 -> s2 where
---   convertPeerStep ::
---     Monad m =>
---     Peer p1 r s1 m a ->
---     Peer p2 r s2 m a
+-- -- class ConvertPeerStep p1 p2 r (s1 :: p1) (s2 :: p2) | p1 -> p2, s1 -> s2 where
+-- --   convertPeerStep ::
+-- --     Monad m =>
+-- --     Peer p1 r s1 m a ->
+-- --     Peer p2 r s2 m a
+
+-- -- -- | This will, where possible, remove @TryChangeVersion@ constructors with the
+-- -- -- translated version of the alternative branch.
+-- -- applyChangeVersion ::
+-- --   -- |
+-- --   Peer protocol r st m a ->
+-- --   -- | When an alternate branch is encountered (i.e. a @TryChangeVersion@
+-- --   -- constructor), then the alternate branch is cast with @Data.Typeable.cast@
+-- --   -- and if successful, transformed with the @PeerTransformer@ and subsumes the
+-- --   -- @TryChangeVersion@ constructor (effectively dropping the default branch).
+-- --   [PeerTransformer protocol] ->
+-- --   Peer protocol r st m a
+-- -- applyChangeVersion peer transformers = _
 
 -- -- | This will, where possible, remove @TryChangeVersion@ constructors with the
 -- -- translated version of the alternative branch.
--- applyChangeVersion ::
+-- applyChangeVersionWith ::
+--   forall protocol r st m a.
 --   -- |
 --   Peer protocol r st m a ->
 --   -- | When an alternate branch is encountered (i.e. a @TryChangeVersion@
 --   -- constructor), then the alternate branch is cast with @Data.Typeable.cast@
 --   -- and if successful, transformed with the @PeerTransformer@ and subsumes the
 --   -- @TryChangeVersion@ constructor (effectively dropping the default branch).
---   [PeerTransformer protocol] ->
+--   -- If the cast fails, then the @TryChangeVersion@ constructor is kept as is.
+--   ( forall protocol' st'.
+--     ( Typeable protocol',
+--       Typeable st'
+--     ) =>
+--     Peer protocol' r st' m a ->
+--     Maybe (Peer protocol r st m a)
+--   ) ->
 --   Peer protocol r st m a
--- applyChangeVersion peer transformers = _
+-- applyChangeVersionWith peer transform = case peer of
+--   TryChangeVersion _ peer' _ -> fromMaybe peer (transform peer')
+--   _ -> peer
 
--- | This will, where possible, remove @TryChangeVersion@ constructors with the
--- translated version of the alternative branch.
-applyChangeVersionWith ::
-  forall protocol r st m a.
-  -- |
-  Peer protocol r st m a ->
-  -- | When an alternate branch is encountered (i.e. a @TryChangeVersion@
-  -- constructor), then the alternate branch is cast with @Data.Typeable.cast@
-  -- and if successful, transformed with the @PeerTransformer@ and subsumes the
-  -- @TryChangeVersion@ constructor (effectively dropping the default branch).
-  -- If the cast fails, then the @TryChangeVersion@ constructor is kept as is.
-  ( forall protocol' st'.
-    ( Typeable protocol',
-      Typeable st'
-    ) =>
-    Peer protocol' r st' m a ->
-    Maybe (Peer protocol r st m a)
-  ) ->
-  Peer protocol r st m a
-applyChangeVersionWith peer transform = case peer of
-  TryChangeVersion _ peer' _ -> fromMaybe peer (transform peer')
-  _ -> peer
+-- data PeerTransformer protocol
+--   = forall protocol' r st st'.
+--     ( Typeable protocol',
+--       Typeable r,
+--       Typeable st'
+--     ) =>
+--     PeerTransformer (forall m a. Peer protocol' r st' m a -> Peer protocol r st m a)
 
-data PeerTransformer protocol
-  = forall protocol' r st st'.
-    ( Typeable protocol',
-      Typeable r,
-      Typeable st'
-    ) =>
-    PeerTransformer (forall m a. Peer protocol' r st' m a -> Peer protocol r st m a)
+-- class Upgradeable1 protocol (st :: protocol) where
+--   type UpgradeState1 protocol st :: NextVersion protocol
+--   upgrade1 ::
+--     Peer protocol r st m a ->
+--     Peer (NextVersion protocol) r (UpgradeState1 protocol st) m a
 
-class Upgradeable1 protocol (st :: protocol) where
-  type UpgradeState1 protocol st :: NextVersion protocol
-  upgrade1 ::
-    Peer protocol r st m a ->
-    Peer (NextVersion protocol) r (UpgradeState1 protocol st) m a
+-- type family UpgradeState (protocol :: Type) (st :: protocol) (protocol' :: Type) :: protocol' where
+--   UpgradeState protocol st protocol = st
+--   UpgradeState protocol st protocol' = UpgradeState (NextVersion protocol) (UpgradeState1 protocol st) protocol'
 
-type family UpgradeState (protocol :: Type) (st :: protocol) (protocol' :: Type) :: protocol' where
-  UpgradeState protocol st protocol = st
-  UpgradeState protocol st protocol' = UpgradeState (NextVersion protocol) (UpgradeState1 protocol st) protocol'
+-- class Upgradeable protocol (st :: protocol) protocol' where
+--   upgrade ::
+--     Peer protocol r st m a ->
+--     Peer protocol' r (UpgradeState protocol st protocol') m a
 
-class Upgradeable protocol (st :: protocol) protocol' where
-  upgrade ::
-    Peer protocol r st m a ->
-    Peer protocol' r (UpgradeState protocol st protocol') m a
+-- instance Upgradeable p st p where
+--   upgrade = id
 
-instance Upgradeable p st p where
-  upgrade = id
+-- instance
+--   ( Upgradeable1 p st,
+--     Upgradeable (NextVersion p) (UpgradeState1 p st) p'
+--   ) =>
+--   Upgradeable p st p'
+--   where
+--   upgrade peer = upgrade (upgrade1 peer)
 
-instance
-  ( Upgradeable1 p st,
-    Upgradeable (NextVersion p) (UpgradeState1 p st) p'
+data PeerUpgrader r loProtocol hiProtocol where
+  Upgrade ::
+    forall loProtocol hiProtocol protocol r.
+    (Typeable loProtocol, Typeable protocol) =>
+    ( forall (st :: loProtocol) m a.
+      ( Typeable st,
+        Typeable m,
+        Typeable a
+      ) =>
+      Peer loProtocol r st m a ->
+      (UpgradeResult protocol r m a)
+    ) ->
+    PeerUpgrader r protocol hiProtocol ->
+    PeerUpgrader r loProtocol hiProtocol
+  NoUpgrade :: PeerUpgrader r a a
+
+data UpgradeResult protocol r m a
+  = UpgradeFail
+  | forall (st :: protocol). Typeable st => UpgradeSuccess (Peer protocol r st m a)
+
+upgradePeer ::
+  forall loProtocol hiProtocol protocol protocol' (r :: PeerRole) (st :: protocol) (st' :: protocol') m a.
+  ( Typeable loProtocol,
+    Typeable protocol,
+    Typeable protocol',
+    Typeable r,
+    Typeable st,
+    Typeable st',
+    Typeable m,
+    Typeable a
   ) =>
-  Upgradeable p st p'
-  where
-  upgrade peer = upgrade (upgrade1 peer)
+  PeerUpgrader r loProtocol hiProtocol ->
+  Peer protocol r st m a ->
+  Maybe (Peer protocol' r st' m a)
+upgradePeer upgrader p =
+  -- Check if we are already at the desired protocol version.
+  case cast p of
+    Just p' -> Just p'
+    -- Try to use the upgrader.
+    Nothing -> case upgrader of
+      -- Upgrader has at least 1 upgrade function. If p is the right type then
+      -- we can try to upgrade.
+      Upgrade tryUpgrade upgrader' -> case eqT @protocol @loProtocol of
+        Just Refl -> case tryUpgrade @st @m @a p of
+          UpgradeFail -> upgradePeer upgrader' p
+          UpgradeSuccess p' -> upgradePeer upgrader' p'
+        -- p is not the right type for `tryUpgrade`, but we can try the next
+        -- upgrader.
+        Nothing -> upgradePeer upgrader' p
+      NoUpgrade -> Nothing

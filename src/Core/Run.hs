@@ -83,9 +83,10 @@ runClient ::
   ProtocolVersion ->
   -- | Max protocol version supported
   ProtocolVersion ->
+  PeerUpgrader r pLo pHi -> -- TODO this and the min/max protocol versions seems redundant
   (ProtocolVersion -> SomePeer AsClient a) ->
   IO a
-runClient minVersion maxVersion mkPeer =
+runClient minVersion maxVersion upgrader mkPeer =
   connect "127.0.0.1" port $ \(connectionSocket, remoteAddr) -> do
     putStrLn $ "Connection established to " ++ show remoteAddr
     negotiatedVersion <- handShake minVersion maxVersion connectionSocket
@@ -93,8 +94,8 @@ runClient minVersion maxVersion mkPeer =
       SomePeer msgDecoder peer ->
         runPeer
           msgDecoder
-          BS.empty
           connectionSocket
+          upgrader
           peer
 
 runServer ::
@@ -102,51 +103,62 @@ runServer ::
   ProtocolVersion ->
   -- | Max protocol version supported
   ProtocolVersion ->
+  PeerUpgrader r pLo pHi -> -- TODO this and the min/max protocol versions seems redundant
   (ProtocolVersion -> SomePeer AsServer ()) ->
   IO a
-runServer minVersion maxVersion mkPeer =
+runServer minVersion maxVersion upgrader mkPeer =
   serve (Host "127.0.0.1") port $ \(connectionSocket, remoteAddr) -> do
     putStrLn $ "Connection established to " ++ show remoteAddr
     negotiatedVersion <- handShake minVersion maxVersion connectionSocket
     case mkPeer negotiatedVersion of
-      SomePeer msgDecoder peer -> runPeer msgDecoder BS.empty connectionSocket peer
+      SomePeer msgDecoder peer -> runPeer msgDecoder connectionSocket upgrader peer
 
 runPeer ::
-  forall protocol r st a.
-  (Protocol protocol, S.Serialise (SomeMessage protocol)) =>
-  MessageDecoder protocol ->
-  ByteString ->
+  forall pLo pHi pPeer pWire (r :: PeerRole) (st :: pPeer) a.
+  ( Protocol pWire,
+    S.Serialise (SomeMessage pWire),
+    Typeable st
+  ) =>
+  MessageDecoder pWire ->
   Socket ->
-  Peer protocol r st IO a ->
+  PeerUpgrader r pLo pHi ->
+  Peer pPeer r st IO a ->
   IO a
-runPeer msgDecoder recvBuff socket peer = case peer of
-  Effect peer'M -> do
-    peer' <- peer'M
-    runPeer msgDecoder recvBuff socket peer'
-  Done _ a -> return a
-  Yield _ msg peer' -> do
-    send socket (BS.toStrict $ S.serialise (SomeMessage msg))
-    runPeer msgDecoder recvBuff socket peer'
-  Await hasAgency peer' -> do
-    let recvMsg ::
-          ByteString -> S.IDecode RealWorld (SomeMessage protocol) -> IO a
-        recvMsg recvBuff' idecode = do
-          case idecode of
-            S.Done recvBuff'' _ someMessage ->
-              case msgDecoder hasAgency someMessage of
-                SomeMessageInSt msg ->
-                  runPeer
-                    msgDecoder
-                    (BS.fromStrict recvBuff'')
-                    socket
-                    (peer' msg)
-            S.Partial inc -> do
-              moreBuff <- recv socket 1024
-              let recvBuff'' =
-                    maybe recvBuff' ((recvBuff' <>) . BS.fromStrict) moreBuff
-              idecode' <- stToIO (inc (Just (BS.toStrict recvBuff'')))
-              recvMsg recvBuff'' idecode'
-            S.Fail {} -> error "FAILED to deserialise a message!"
-    (recvMsg recvBuff =<< stToIO S.deserialiseIncremental)
-  -- Too late to change versions... that should be handled by the upgrade function.
-  TryChangeVersion _ _ peer' -> runPeer msgDecoder recvBuff socket peer'
+runPeer msgDecoder socket upgrader =
+  go BS.empty
+    . fromMaybe (error "PeerUpgrader unable to upgrade to protocol on the wire")
+    . upgradePeer upgrader
+  where
+    go ::
+      forall (st' :: pWire).
+      ByteString ->
+      Peer pWire r st' IO a ->
+      IO a
+    go recvBuff peer = case peer of
+      Effect peer'M -> do
+        peer' <- peer'M
+        go recvBuff peer'
+      Done _ a -> return a
+      Yield _ msg peer' -> do
+        send socket (BS.toStrict $ S.serialise (SomeMessage msg))
+        go recvBuff peer'
+      Await hasAgency peer' -> do
+        let recvMsg :: ByteString -> S.IDecode RealWorld (SomeMessage pWire) -> IO a
+            recvMsg recvBuff' idecode = do
+              case idecode of
+                S.Done recvBuff'' _ someMessage ->
+                  case msgDecoder hasAgency someMessage of
+                    SomeMessageInSt msg ->
+                      go
+                        (BS.fromStrict recvBuff'')
+                        (peer' msg)
+                S.Partial inc -> do
+                  moreBuff <- recv socket 1024
+                  let recvBuff'' =
+                        maybe recvBuff' ((recvBuff' <>) . BS.fromStrict) moreBuff
+                  idecode' <- stToIO (inc (Just (BS.toStrict recvBuff'')))
+                  recvMsg recvBuff'' idecode'
+                S.Fail {} -> error "FAILED to deserialise a message!"
+        (recvMsg recvBuff =<< stToIO S.deserialiseIncremental)
+      -- Too late to change versions... that should be handled by the upgrade function.
+      TryChangeVersion _ _ peer' -> go recvBuff peer'
