@@ -20,6 +20,7 @@ import qualified Codec.Serialise.Encoding as S
 import Core
 import Core.Run
 import Data.Text
+import qualified Protocol.V1 as V1
 
 ---------------------------------------------------------------
 -- Protocol
@@ -94,47 +95,97 @@ codec (ServerAgency tok) (SomeMessage msg@(EchoResp {})) = case tok of
   _ -> error "unexpected message"
 codec (ServerAgency _) (SomeMessage Stop) = error "unexpected message"
 
-client :: Peer MyProtocol AsClient StIdle IO ()
-client = Effect $ do
-  putStrLn "Ping"
-  return (Yield (ClientAgency TokIdle) Ping goPinged)
+---------------------------------------------------------------
+-- Compatability
+---------------------------------------------------------------
+
+downgradeServerV2ToV1 ::
+  forall m a.
+  Monad m =>
+  Peer MyProtocol AsServer StIdle m a ->
+  Peer V1.MyProtocol AsServer V1.StIdle m a
+downgradeServerV2ToV1 server2Top = goIdle server2Top
   where
-    recvPinged :: Message MyProtocol StPinged st -> Peer MyProtocol AsClient st IO ()
-    recvPinged Pong = Effect $ do
-      putStrLn "Pong"
-      putStrLn "Echo \"boop\""
-      return (Yield (ClientAgency TokIdle) (Echo "boop") goEchoed)
+    goIdle ::
+      Peer MyProtocol 'AsServer 'StIdle m a ->
+      Peer V1.MyProtocol 'AsServer 'V1.StIdle m a
+    goIdle server2 = case server2 of
+      Effect eff -> Effect (goIdle <$> eff)
+      Await (ClientAgency TokIdle) server2' ->
+        Await
+          (ClientAgency V1.TokIdle)
+          ( \msg1 -> case msg1 of
+              V1.Ping -> goPinged (server2' Ping)
+              V1.Stop -> goDone (server2' Stop)
+          )
 
-    recvEchoed :: Message MyProtocol StEchoed st -> Peer MyProtocol AsClient st IO ()
-    recvEchoed (EchoResp str) = Effect $ do
-      putStrLn $ "EchoResp" ++ show str
-      return (Yield (ClientAgency TokIdle) Stop goDone)
+    goDone ::
+      Peer MyProtocol 'AsServer 'StDone m a ->
+      Peer V1.MyProtocol 'AsServer 'V1.StDone m a
+    goDone server2 = case server2 of
+      Effect eff -> Effect (goDone <$> eff)
+      Done _ a -> Done V1.TokDone a
 
-    goPinged :: Peer MyProtocol AsClient StPinged IO ()
-    goPinged = Await (ServerAgency TokPinged) recvPinged
+    goPinged ::
+      Peer MyProtocol 'AsServer 'StPinged m a ->
+      Peer V1.MyProtocol 'AsServer 'V1.StPinged m a
+    goPinged server2 = case server2 of
+      Effect eff -> Effect (goPinged <$> eff)
+      Yield (ServerAgency TokPinged) msg server2' -> case msg of
+        Pong ->
+          Yield
+            (ServerAgency V1.TokPinged)
+            V1.Pong
+            (goIdle server2')
 
-    goEchoed :: Peer MyProtocol AsClient StEchoed IO ()
-    goEchoed = Await (ServerAgency TokEchoed) recvEchoed
+-- upgradeClientV1ToV2 ::
+--   forall m a.
+--   (Typeable a, Monad m) =>
+--   Peer V1.MyProtocol AsClient V1.StIdle m a ->
+--   Peer MyProtocol AsClient StIdle m a
+-- upgradeClientV1ToV2 server1Top = goIdle server1Top
+--   where
+--     goIdle ::
+--       Peer V1.MyProtocol AsClient V1.StIdle m a ->
+--       Peer MyProtocol AsClient StIdle m a
+--     goIdle client1 = case client1 of
+--       Effect eff -> Effect (goIdle <$> eff)
+--       Yield (ClientAgency _) msg client1' -> case msg of
+--         V1.Ping -> Yield (ClientAgency TokIdle) Ping (goPinged client1')
+--         V1.Stop -> Yield (ClientAgency TokIdle) Stop (goStopped client1')
+--       DowngradeVersion v peer -> DowngradeVersion v peer
+--       UpgradeVersion v peerUp peerAlt -> undefined
 
-    goDone :: Peer MyProtocol AsClient StDone IO ()
-    goDone = Done TokDone ()
+--     goPinged ::
+--       Peer V1.MyProtocol AsClient V1.StPinged m a ->
+--       Peer MyProtocol AsClient StPinged m a
+--     goPinged client1 = case client1 of
+--       Effect eff -> Effect (goPinged <$> eff)
+--       Await (ServerAgency V1.TokPinged) client1' ->
+--         Await
+--           (ServerAgency TokPinged)
+--           ( \msg1 -> case msg1 of
+--               Pong -> goIdle (client1' V1.Pong)
+--           )
 
-server :: Peer MyProtocol AsServer StIdle IO ()
-server = goIdle
-  where
-    goIdle :: Peer MyProtocol AsServer StIdle IO ()
-    goIdle = Await (ClientAgency TokIdle) recvIdle
+--     goStopped ::
+--       Peer V1.MyProtocol AsClient V1.StDone m a ->
+--       Peer MyProtocol AsClient StDone m a
+--     goStopped client1 = case client1 of
+--       Effect eff -> Effect (goStopped <$> eff)
+--       Done V1.TokDone a -> Done TokDone a
 
-    recvIdle :: Message MyProtocol StIdle st -> Peer MyProtocol AsServer st IO ()
-    recvIdle Ping = Effect $ do
-      putStrLn "Ping"
-      putStrLn "Pong"
-      return (Yield (ServerAgency TokPinged) Pong goIdle)
-    recvIdle (Echo str) = Effect $ do
-      putStrLn $ "Echo " ++ show str
-      putStrLn $ "EchoResp " ++ show str
-      return (Yield (ServerAgency TokEchoed) (EchoResp str) goIdle)
-    recvIdle Stop = goDone
-
-    goDone :: Peer MyProtocol AsServer StDone IO ()
-    goDone = Done TokDone ()
+instance Upgradeable AsClient V1.StIdle StIdle where
+  upgradePeer client1 = case client1 of
+    Effect eff -> Effect (upgradePeer <$> eff)
+    Yield (ClientAgency _) msg client1' -> case msg of
+      V1.Ping -> Yield (ClientAgency TokIdle) Ping (upgradePeer client1')
+      V1.Stop -> Yield (ClientAgency TokIdle) Stop (upgradePeer client1')
+    DowngradeVersion path peer -> DowngradeVersion (appendUpgradePath path) peer
+    UpgradeVersion path peerUp peerAlt -> case path of
+      UpgradeComplete -> upgradePeer peerUp
+      UpgradePath path' ->
+        UpgradeVersion
+          path'
+          peerUp
+          (upgradePeer peerAlt)

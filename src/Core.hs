@@ -1,5 +1,7 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GADTs #-}
@@ -13,6 +15,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeInType #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 -- | This module defines the core of the typed protocol framework.
@@ -37,21 +40,22 @@ module Core
     SomeMessageInSt (..),
     MessageDecoder,
 
+    -- * Up/Downgrading
+    Upgradeable (..),
+    HasUpgradePath (..),
+    UpgradePath (..),
+    upgradePeer',
+    applyUpgradePath,
+    appendUpgradePath,
+
     -- * Protocol proofs and tests
     -- $tests
     -- $lemmas
-    PeerUpgrader (..),
-    upgradePeer,
-    -- -- * Peer protocol transformations
-    -- PeerTransformer (..),
-    -- -- applyChangeVersion,
-    -- applyChangeVersionWith,
-    -- Upgradeable1 (..),
-    -- Upgradeable (..),
   )
 where
 
-import Data.Typeable
+import Data.Kind
+import Data.Proxy
 import Data.Void (Void)
 
 -- $intro
@@ -300,13 +304,6 @@ class Protocol ps where
   -- server has agency.
   data NobodyHasAgency (st :: ps)
 
-  -- TODO we want to enforce:
-  --   NextVersion (PreviousVersion p) == p
-  --   PreviousVersion (NextVersion p) == p
-  type NextVersion ps
-
-  -- type PreviousVersion ps
-
   -- | Lemma that if the client has agency for a state, there are no
   -- cases in which the server has agency for the same state.
   exclusionLemma_ClientAndServerHaveAgency ::
@@ -473,146 +470,89 @@ data Peer ps (pr :: PeerRole) (st :: ps) m a where
     !(TheyHaveAgency pr st) ->
     (forall st'. Message ps st st' -> Peer ps pr st' m a) ->
     Peer ps pr st m a
-  TryChangeVersion ::
-    ( Typeable psB,
-      Typeable stB,
-      Typeable psA,
-      Typeable stA,
-      Typeable m
-      -- TODO
-      -- - this is an upgrade or downgrade (check using NextVersion)
-      -- - there exists a chain of upgrade or downgrade functions to
-    ) =>
-    Proxy psB ->
+  UpgradeVersion ::
+    UpgradePath pr psA stA psB ->
     Peer psB pr stB m a ->
+    -- | alternative incase upgrade in not possible (i.e. the on-the-wire protocol is too low)
     Peer psA pr stA m a ->
+    Peer psA pr stA m a
+  -- | In practice we never downgrade, we only upgrade hence the `Upgradeable'`
+  -- constraint here.
+  DowngradeVersion ::
+    UpgradePath pr psB stB psA ->
+    Peer psB pr stB m a ->
     Peer psA pr stA m a
 
 deriving instance Functor m => Functor (Peer ps (pr :: PeerRole) (st :: ps) m)
 
--- -- class ConvertPeerStep p1 p2 r (s1 :: p1) (s2 :: p2) | p1 -> p2, s1 -> s2 where
--- --   convertPeerStep ::
--- --     Monad m =>
--- --     Peer p1 r s1 m a ->
--- --     Peer p2 r s2 m a
+--
+-- USING classes / type families
+--
 
--- -- -- | This will, where possible, remove @TryChangeVersion@ constructors with the
--- -- -- translated version of the alternative branch.
--- -- applyChangeVersion ::
--- --   -- |
--- --   Peer protocol r st m a ->
--- --   -- | When an alternate branch is encountered (i.e. a @TryChangeVersion@
--- --   -- constructor), then the alternate branch is cast with @Data.Typeable.cast@
--- --   -- and if successful, transformed with the @PeerTransformer@ and subsumes the
--- --   -- @TryChangeVersion@ constructor (effectively dropping the default branch).
--- --   [PeerTransformer protocol] ->
--- --   Peer protocol r st m a
--- -- applyChangeVersion peer transformers = _
+-- | Upgrade to the next version from a fixed state
+type family UpgradeProtocol :: Type -> Type -- TODO sigh! GHC doesn't allow this in the Upgradeable where it should be!
 
--- -- | This will, where possible, remove @TryChangeVersion@ constructors with the
--- -- translated version of the alternative branch.
--- applyChangeVersionWith ::
---   forall protocol r st m a.
---   -- |
---   Peer protocol r st m a ->
---   -- | When an alternate branch is encountered (i.e. a @TryChangeVersion@
---   -- constructor), then the alternate branch is cast with @Data.Typeable.cast@
---   -- and if successful, transformed with the @PeerTransformer@ and subsumes the
---   -- @TryChangeVersion@ constructor (effectively dropping the default branch).
---   -- If the cast fails, then the @TryChangeVersion@ constructor is kept as is.
---   ( forall protocol' st'.
---     ( Typeable protocol',
---       Typeable st'
---     ) =>
---     Peer protocol' r st' m a ->
---     Maybe (Peer protocol r st m a)
---   ) ->
---   Peer protocol r st m a
--- applyChangeVersionWith peer transform = case peer of
---   TryChangeVersion _ peer' _ -> fromMaybe peer (transform peer')
---   _ -> peer
+type family AreEqual a b where
+  AreEqual a a = True
+  AreEqual _ _ = False
 
--- data PeerTransformer protocol
---   = forall protocol' r st st'.
---     ( Typeable protocol',
---       Typeable r,
---       Typeable st'
---     ) =>
---     PeerTransformer (forall m a. Peer protocol' r st' m a -> Peer protocol r st m a)
+class
+  (Protocol protocol, Protocol (UpgradeProtocol protocol)) =>
+  Upgradeable (r :: PeerRole) (st :: protocol)
+  where
+  type UpgradeSt r st :: UpgradeProtocol protocol
+  upgradePeer :: Monad m => Peer protocol r st m a -> Peer protocol' r st' m a
 
--- class Upgradeable1 protocol (st :: protocol) where
---   type UpgradeState1 protocol st :: NextVersion protocol
---   upgrade1 ::
---     Peer protocol r st m a ->
---     Peer (NextVersion protocol) r (UpgradeState1 protocol st) m a
-
--- type family UpgradeState (protocol :: Type) (st :: protocol) (protocol' :: Type) :: protocol' where
---   UpgradeState protocol st protocol = st
---   UpgradeState protocol st protocol' = UpgradeState (NextVersion protocol) (UpgradeState1 protocol st) protocol'
-
--- class Upgradeable protocol (st :: protocol) protocol' where
---   upgrade ::
---     Peer protocol r st m a ->
---     Peer protocol' r (UpgradeState protocol st protocol') m a
-
--- instance Upgradeable p st p where
---   upgrade = id
-
--- instance
---   ( Upgradeable1 p st,
---     Upgradeable (NextVersion p) (UpgradeState1 p st) p'
---   ) =>
---   Upgradeable p st p'
---   where
---   upgrade peer = upgrade (upgrade1 peer)
-
-data PeerUpgrader r loProtocol hiProtocol where
-  Upgrade ::
-    forall loProtocol hiProtocol protocol r.
-    (Typeable loProtocol, Typeable protocol) =>
-    ( forall (st :: loProtocol) m a.
-      ( Typeable st,
-        Typeable m,
-        Typeable a
-      ) =>
-      Peer loProtocol r st m a ->
-      (UpgradeResult protocol r m a)
-    ) ->
-    PeerUpgrader r protocol hiProtocol ->
-    PeerUpgrader r loProtocol hiProtocol
-  NoUpgrade :: PeerUpgrader r a a
-
-data UpgradeResult protocol r m a
-  = UpgradeFail
-  | forall (st :: protocol). Typeable st => UpgradeSuccess (Peer protocol r st m a)
-
-upgradePeer ::
-  forall loProtocol hiProtocol protocol protocol' (r :: PeerRole) (st :: protocol) (st' :: protocol') m a.
-  ( Typeable loProtocol,
-    Typeable protocol,
-    Typeable protocol',
-    Typeable r,
-    Typeable st,
-    Typeable st',
-    Typeable m,
-    Typeable a
-  ) =>
-  PeerUpgrader r loProtocol hiProtocol ->
+upgradePeer' ::
+  forall (r :: PeerRole) protocol (st :: protocol) protocol' m a.
+  (Monad m, HasUpgradePath r protocol st protocol') =>
   Peer protocol r st m a ->
-  Maybe (Peer protocol' r st' m a)
-upgradePeer upgrader p =
-  -- Check if we are already at the desired protocol version.
-  case cast p of
-    Just p' -> Just p'
-    -- Try to use the upgrader.
-    Nothing -> case upgrader of
-      -- Upgrader has at least 1 upgrade function. If p is the right type then
-      -- we can try to upgrade.
-      Upgrade tryUpgrade upgrader' -> case eqT @protocol @loProtocol of
-        Just Refl -> case tryUpgrade @st @m @a p of
-          UpgradeFail -> upgradePeer upgrader' p
-          UpgradeSuccess p' -> upgradePeer upgrader' p'
-        -- p is not the right type for `tryUpgrade`, but we can try the next
-        -- upgrader.
-        Nothing -> upgradePeer upgrader' p
-      NoUpgrade -> Nothing
+  Peer protocol' r (UpgradeStTo r protocol st protocol') m a
+upgradePeer' = applyUpgradePath (upgradePath (Proxy @r) (Proxy @st) (Proxy @protocol'))
+
+type family UpgradeStTo (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type) :: protocol' where
+  UpgradeStTo r p st p = st
+  UpgradeStTo r p st p' = UpgradeStTo r (UpgradeProtocol p) (UpgradeSt r st) p'
+
+class HasUpgradePath (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type) where
+  upgradePath :: Proxy r -> Proxy st -> Proxy protocol' -> UpgradePath r protocol st protocol'
+
+instance HasUpgradePath' (AreEqual protocol protocol') r protocol st protocol' => HasUpgradePath r protocol st protocol' where
+  upgradePath _ _ _ = upgradePath' (Proxy @(AreEqual protocol protocol')) (Proxy @r) (Proxy @st) (Proxy @protocol')
+
+class HasUpgradePath' (done :: Bool) (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type) where
+  upgradePath' :: Proxy done -> Proxy r -> Proxy st -> Proxy protocol' -> UpgradePath r protocol st protocol'
+
+instance HasUpgradePath' True r p st p where
+  upgradePath' _ _ _ _ = UpgradeComplete
+
+instance (Upgradeable r st, HasUpgradePath' (AreEqual (UpgradeProtocol p) p') r (UpgradeProtocol p) (UpgradeSt r st) p') => HasUpgradePath' False r p st p' where
+  upgradePath' _ _ _ p' = UpgradePath (upgradePath' (Proxy @(AreEqual (UpgradeProtocol p) p')) (Proxy @r) (Proxy @(UpgradeSt r st)) p')
+
+-- | Witness to an upgrade path
+data UpgradePath (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type) where
+  UpgradeComplete :: UpgradePath r protocol st protocol
+  UpgradePath :: (Upgradeable r st) => UpgradePath r (UpgradeProtocol protocol) (UpgradeSt r st) protocol' -> UpgradePath r protocol st protocol'
+
+applyUpgradePath ::
+  forall (r :: PeerRole) (protocol :: Type) (protocol' :: Type) (st :: protocol) (st' :: protocol') m a.
+  Monad m =>
+  UpgradePath r protocol st protocol' ->
+  Peer protocol r st m a ->
+  Peer protocol' r st' m a
+applyUpgradePath path peer = case path of
+  UpgradeComplete -> peer
+  UpgradePath path' -> applyUpgradePath path' (upgradePeer peer)
+
+appendUpgradePath ::
+  forall (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type).
+  (AppendUpgradePathC r protocol st protocol') =>
+  UpgradePath r protocol st protocol' ->
+  UpgradePath r protocol st (UpgradeProtocol protocol')
+appendUpgradePath path = case path of
+  UpgradeComplete -> UpgradePath UpgradeComplete
+  UpgradePath up -> UpgradePath (appendUpgradePath up)
+
+type family AppendUpgradePathC (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type) :: Constraint where
+  AppendUpgradePathC r protocol st protocol = Upgradeable r st
+  AppendUpgradePathC r protocol st protocol' = AppendUpgradePathC r (UpgradeProtocol protocol) (UpgradeSt r st) protocol'

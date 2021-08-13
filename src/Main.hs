@@ -13,12 +13,14 @@
 
 module Main where
 
+import Core (HasUpgradePath (upgradePath))
 import Core.Run
+import qualified Peer.V1 as V1
+import qualified Peer.V2 as V2
+import qualified Peer.V3 as V3
 import qualified Protocol.V1 as V1
 import qualified Protocol.V2 as V2
-import qualified Protocol.V2Compat as V2
 import qualified Protocol.V3 as V3
-import qualified Protocol.V3Compat as V3
 import System.Environment (getArgs)
 
 main :: IO ()
@@ -79,27 +81,22 @@ main = do
           (ProtocolVersion 1)
           (ProtocolVersion (min maxV 3))
           ( \(ProtocolVersion v) -> case v of
-              1 -> SomePeer V1.codec client1
-              2 -> SomePeer V2.codec client2
-              3 -> SomePeer V3.codec client3
+              1 -> SomeDecoderAndUpgradePath V1.codec upgradePath
+              2 -> SomeDecoderAndUpgradePath V2.codec upgradePath
+              3 -> SomeDecoderAndUpgradePath V3.codec upgradePath
               _ -> error $ "Unsupported version: " ++ show v
           )
-        where
-          client1 = V1.client
-          client2 = V2.upgradeClientV1ToV2 client1
-          client3 = V3.upgradeClientV2ToV3 client2
+          V1.client
       2 ->
         runClient
           (ProtocolVersion 2)
           (ProtocolVersion (min maxV 3))
           ( \(ProtocolVersion v) -> case v of
-              2 -> SomePeer V2.codec client2
-              3 -> SomePeer V3.codec client3
+              2 -> SomeDecoderAndUpgradePath V2.codec upgradePath
+              3 -> SomeDecoderAndUpgradePath V3.codec upgradePath
               _ -> error $ "Unsupported version: " ++ show v
           )
-        where
-          client2 = V2.client
-          client3 = V3.upgradeClientV2ToV3 client2
+          V2.client
       -- In practice we'll only have this case i.e. the latest version of the
       -- client
       3 ->
@@ -107,9 +104,10 @@ main = do
           (ProtocolVersion 3)
           (ProtocolVersion (min maxV 3))
           ( \(ProtocolVersion v) -> case v of
-              3 -> SomePeer V3.codec V3.client
+              3 -> SomeDecoderAndUpgradePath V3.codec upgradePath
               _ -> error $ "Unsupported version: " ++ show v
           )
+          V3.client
       _ -> error $ "Unsupported version: " ++ versionStr
     _ ->
       putStrLn $

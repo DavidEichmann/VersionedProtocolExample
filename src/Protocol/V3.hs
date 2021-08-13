@@ -20,6 +20,7 @@ import qualified Codec.Serialise.Encoding as S
 import Core
 import Core.Run
 import Data.Text
+import qualified Protocol.V2 as V2
 
 ---------------------------------------------------------------
 -- Protocol
@@ -139,77 +140,106 @@ codec (ServerAgency tok) (SomeMessage msg@Result {}) = case tok of
   TokQueried -> SomeMessageInSt msg
   _ -> error "unexpected message"
 
-client :: Peer MyProtocol AsClient StIdle IO ()
-client = goIdle_0
+---------------------------------------------------------------
+-- Compat
+---------------------------------------------------------------
+
+downgradeServerV3ToV2 ::
+  forall m a.
+  Monad m =>
+  Peer MyProtocol AsServer StIdle m a ->
+  Peer V2.MyProtocol AsServer V2.StIdle m a
+downgradeServerV3ToV2 server3Top = goIdle server3Top
   where
-    goIdle_0 :: Peer MyProtocol AsClient StIdle IO ()
-    goIdle_0 = Effect $ do
-      putStrLn "Ping"
-      return (Yield (ClientAgency TokIdle) Ping goPinged)
+    goIdle ::
+      Peer MyProtocol 'AsServer 'StIdle m a ->
+      Peer V2.MyProtocol 'AsServer 'V2.StIdle m a
+    goIdle server3 = case server3 of
+      Effect eff -> Effect (goIdle <$> eff)
+      Await (ClientAgency TokIdle) server3' ->
+        Await
+          (ClientAgency V2.TokIdle)
+          ( \msg2 -> case msg2 of
+              V2.Ping -> goPinged (server3' Ping)
+              V2.Echo txt -> goEchoed (server3' (Echo txt))
+              V2.Stop -> goDone (server3' Stop)
+          )
 
-    goIdle_1 :: Message MyProtocol StPinged st -> Peer MyProtocol AsClient st IO ()
-    goIdle_1 Pong = Effect $ do
-      putStrLn "Pong"
-      putStrLn "Echo \"boop\""
-      return (Yield (ClientAgency TokIdle) (Echo "boop") goEchoed)
+    goDone ::
+      Peer MyProtocol 'AsServer 'StDone m a ->
+      Peer V2.MyProtocol 'AsServer 'V2.StDone m a
+    goDone server3 = case server3 of
+      Effect eff -> Effect (goDone <$> eff)
+      Done _ a -> Done V2.TokDone a
 
-    goIdle_2 :: Message MyProtocol StEchoed st -> Peer MyProtocol AsClient st IO ()
-    goIdle_2 (EchoResp str) = Effect $ do
-      putStrLn $ "EchoResp" ++ show str
-      return (Yield (ClientAgency TokIdle) (Query (IncrementCount 999)) goQueried_0)
+    goPinged ::
+      Peer MyProtocol 'AsServer 'StPinged m a ->
+      Peer V2.MyProtocol 'AsServer 'V2.StPinged m a
+    goPinged server3 = case server3 of
+      Effect eff -> Effect (goPinged <$> eff)
+      Yield (ServerAgency TokPinged) msg server3' -> case msg of
+        Pong ->
+          Yield
+            (ServerAgency V2.TokPinged)
+            V2.Pong
+            (goIdle server3')
 
-    goIdle_3 :: Message MyProtocol StQueried st -> Peer MyProtocol AsClient st IO ()
-    goIdle_3 (Result q result) = Effect $ do
-      printResult q result
-      return (Yield (ClientAgency TokIdle) (Query GetCount) goQueried_1)
+    goEchoed ::
+      Peer MyProtocol 'AsServer 'StEchoed m a ->
+      Peer V2.MyProtocol 'AsServer 'V2.StEchoed m a
+    goEchoed server3 = case server3 of
+      Effect eff -> Effect (goEchoed <$> eff)
+      Yield (ServerAgency TokEchoed) msg server3' -> case msg of
+        EchoResp txt ->
+          Yield
+            (ServerAgency V2.TokEchoed)
+            (V2.EchoResp txt)
+            (goIdle server3')
 
-    goIdle_4 :: Message MyProtocol StQueried st -> Peer MyProtocol AsClient st IO ()
-    goIdle_4 (Result q result) = Effect $ do
-      printResult q result
-      return (Yield (ClientAgency TokIdle) Stop goDone)
-
-    goPinged :: Peer MyProtocol AsClient StPinged IO ()
-    goPinged = Await (ServerAgency TokPinged) goIdle_1
-
-    goEchoed :: Peer MyProtocol AsClient StEchoed IO ()
-    goEchoed = Await (ServerAgency TokEchoed) goIdle_2
-
-    goQueried_0 :: Peer MyProtocol AsClient StQueried IO ()
-    goQueried_0 = Await (ServerAgency TokQueried) goIdle_3
-
-    goQueried_1 :: Peer MyProtocol AsClient StQueried IO ()
-    goQueried_1 = Await (ServerAgency TokQueried) goIdle_4
-
-    goDone :: Peer MyProtocol AsClient StDone IO ()
-    goDone = Done TokDone ()
-
-    printResult :: Query result -> result -> IO ()
-    printResult q r = case q of
-      IncrementCount {} -> print r
-      GetCount -> print r
-
-server :: Peer MyProtocol AsServer StIdle IO ()
-server = goIdle 0
+upgradeClientV2ToV3 ::
+  forall m a.
+  Monad m =>
+  Peer V2.MyProtocol AsClient V2.StIdle m a ->
+  Peer MyProtocol AsClient StIdle m a
+upgradeClientV2ToV3 client2Top = goIdle client2Top
   where
-    goIdle :: Int -> Peer MyProtocol AsServer StIdle IO ()
-    goIdle c = Await (ClientAgency TokIdle) (recvIdle c)
+    goIdle ::
+      Peer V2.MyProtocol 'AsClient 'V2.StIdle m a ->
+      Peer MyProtocol 'AsClient 'StIdle m a
+    goIdle client2 = case client2 of
+      Effect eff -> Effect (goIdle <$> eff)
+      Yield (ClientAgency V2.TokIdle) msg client2' -> case msg of
+        V2.Ping -> Yield (ClientAgency TokIdle) Ping (goPinged client2')
+        V2.Echo txt -> Yield (ClientAgency TokIdle) (Echo txt) (goEchoed client2')
+        V2.Stop -> Yield (ClientAgency TokIdle) Stop (goDone client2')
 
-    recvIdle :: Int -> Message MyProtocol StIdle st -> Peer MyProtocol AsServer st IO ()
-    recvIdle c Ping = Effect $ do
-      putStrLn "Ping"
-      putStrLn "Pong"
-      return (Yield (ServerAgency TokPinged) Pong (goIdle c))
-    recvIdle c (Echo str) = Effect $ do
-      putStrLn $ "Echo " ++ show str
-      putStrLn $ "EchoResp " ++ show str
-      return (Yield (ServerAgency TokEchoed) (EchoResp str) (goIdle c))
-    recvIdle c (Query q) = case q of
-      IncrementCount i -> Effect $ do
-        let c' = c + i
-        putStrLn $ "Increment count from " ++ show c ++ " to " ++ show c'
-        return (Yield (ServerAgency TokQueried) (Result q ()) (goIdle c'))
-      GetCount -> Yield (ServerAgency TokQueried) (Result q c) (goIdle c)
-    recvIdle _ Stop = goDone
+    goDone ::
+      Peer V2.MyProtocol 'AsClient 'V2.StDone m a ->
+      Peer MyProtocol 'AsClient 'StDone m a
+    goDone client2 = case client2 of
+      Effect eff -> Effect (goDone <$> eff)
+      Done _ a -> Done TokDone a
 
-    goDone :: Peer MyProtocol AsServer StDone IO ()
-    goDone = Done TokDone ()
+    goPinged ::
+      Peer V2.MyProtocol 'AsClient 'V2.StPinged m a ->
+      Peer MyProtocol 'AsClient 'StPinged m a
+    goPinged client2 = case client2 of
+      Effect eff -> Effect (goPinged <$> eff)
+      Await (ServerAgency V2.TokPinged) client2' ->
+        Await
+          (ServerAgency TokPinged)
+          ( \msg3 -> case msg3 of
+              Pong -> goIdle (client2' (V2.Pong))
+          )
+
+    goEchoed ::
+      Peer V2.MyProtocol 'AsClient 'V2.StEchoed m a ->
+      Peer MyProtocol 'AsClient 'StEchoed m a
+    goEchoed client2 = case client2 of
+      Effect eff -> Effect (goEchoed <$> eff)
+      Await (ServerAgency V2.TokEchoed) client2' ->
+        Await
+          (ServerAgency TokEchoed)
+          ( \msg3 -> case msg3 of
+              EchoResp txt -> goIdle (client2' (V2.EchoResp txt))
+          )

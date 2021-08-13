@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -16,6 +17,7 @@ module Core.Run
   ( runServer,
     runClient,
     ProtocolVersion (..),
+    SomeDecoderAndUpgradePath (..),
     SomePeer (..),
   )
 where
@@ -29,6 +31,7 @@ import Core
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as BS
 import Data.Maybe (fromJust, fromMaybe)
+import Data.Typeable
 import Network.Simple.TCP
 
 port :: ServiceName
@@ -40,6 +43,13 @@ data SomePeer r a
     SomePeer
       (MessageDecoder protocol)
       (Peer protocol r (st :: protocol) IO a)
+
+data SomeDecoderAndUpgradePath r st
+  = forall protocol' (st' :: protocol').
+    (S.Serialise (SomeMessage protocol'), Protocol protocol') =>
+    SomeDecoderAndUpgradePath
+      (MessageDecoder protocol')
+      (UpgradePath r st st')
 
 newtype ProtocolVersion = ProtocolVersion Int
 
@@ -79,55 +89,60 @@ handShake (ProtocolVersion minA) (ProtocolVersion maxA) socket = do
   return (ProtocolVersion negotiatedVersion)
 
 runClient ::
+  forall pPeer st a.
+  (Protocol pPeer, Typeable a) =>
   -- | Min protocol version supported
   ProtocolVersion ->
   -- | Max protocol version supported
   ProtocolVersion ->
-  PeerUpgrader r pLo pHi -> -- TODO this and the min/max protocol versions seems redundant
-  (ProtocolVersion -> SomePeer AsClient a) ->
+  (ProtocolVersion -> SomeDecoderAndUpgradePath AsClient st) ->
+  Peer pPeer AsClient st IO a ->
   IO a
-runClient minVersion maxVersion upgrader mkPeer =
+runClient minVersion maxVersion getUpgradePath peer =
   connect "127.0.0.1" port $ \(connectionSocket, remoteAddr) -> do
     putStrLn $ "Connection established to " ++ show remoteAddr
     negotiatedVersion <- handShake minVersion maxVersion connectionSocket
-    case mkPeer negotiatedVersion of
-      SomePeer msgDecoder peer ->
+    case getUpgradePath negotiatedVersion of
+      SomeDecoderAndUpgradePath msgDecoder path ->
         runPeer
           msgDecoder
           connectionSocket
-          upgrader
           peer
+          path
 
 runServer ::
   -- | Min protocol version supported
   ProtocolVersion ->
   -- | Max protocol version supported
   ProtocolVersion ->
-  PeerUpgrader r pLo pHi -> -- TODO this and the min/max protocol versions seems redundant
   (ProtocolVersion -> SomePeer AsServer ()) ->
   IO a
-runServer minVersion maxVersion upgrader mkPeer =
+runServer minVersion maxVersion mkPeer =
   serve (Host "127.0.0.1") port $ \(connectionSocket, remoteAddr) -> do
     putStrLn $ "Connection established to " ++ show remoteAddr
     negotiatedVersion <- handShake minVersion maxVersion connectionSocket
     case mkPeer negotiatedVersion of
-      SomePeer msgDecoder peer -> runPeer msgDecoder connectionSocket upgrader peer
+      SomePeer msgDecoder (peer :: Peer p r st m a) ->
+        runPeer
+          msgDecoder
+          connectionSocket
+          peer
+          UpgradeComplete
 
 runPeer ::
-  forall pLo pHi pPeer pWire (r :: PeerRole) (st :: pPeer) a.
+  forall pPeer pWire (r :: PeerRole) (st :: pPeer) (st0Wire :: pWire) a.
   ( Protocol pWire,
-    S.Serialise (SomeMessage pWire),
-    Typeable st
+    Typeable a,
+    Typeable r,
+    S.Serialise (SomeMessage pWire)
   ) =>
   MessageDecoder pWire ->
   Socket ->
-  PeerUpgrader r pLo pHi ->
   Peer pPeer r st IO a ->
+  -- | Upgrade path from the peer to initial state of the on-the-wire protocol
+  UpgradePath r st st0Wire ->
   IO a
-runPeer msgDecoder socket upgrader =
-  go BS.empty
-    . fromMaybe (error "PeerUpgrader unable to upgrade to protocol on the wire")
-    . upgradePeer upgrader
+runPeer msgDecoder socket peerTop pathTop = go BS.empty (applyUpgradePath pathTop peerTop)
   where
     go ::
       forall (st' :: pWire).
@@ -160,5 +175,9 @@ runPeer msgDecoder socket upgrader =
                   recvMsg recvBuff'' idecode'
                 S.Fail {} -> error "FAILED to deserialise a message!"
         (recvMsg recvBuff =<< stToIO S.deserialiseIncremental)
-      -- Too late to change versions... that should be handled by the upgrade function.
-      TryChangeVersion _ _ peer' -> go recvBuff peer'
+      DowngradeVersion path peer' -> go recvBuff (applyUpgradePath path peer')
+      -- Peer is already at the wire version, so we can't use the upgraded peer
+      -- unless it's equal to the wire version.
+      UpgradeVersion path (peerUp :: Peer pUp r stUp IO a) peerAlt -> case path of
+        UpgradeComplete -> go recvBuff peerUp
+        _ -> go recvBuff peerAlt
