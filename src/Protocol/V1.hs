@@ -9,6 +9,7 @@
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
@@ -17,6 +18,7 @@ module Protocol.V1 where
 import qualified Codec.Serialise as S
 import Core
 import Core.Run
+import qualified Protocol.V2 as V2
 
 ---------------------------------------------------------------
 -- Protocol
@@ -69,3 +71,103 @@ codec (ClientAgency TokIdle) (SomeMessage Stop) = SomeMessageInSt Stop
 codec (ServerAgency TokPinged) (SomeMessage Ping) = error "unexpected message"
 codec (ServerAgency TokPinged) (SomeMessage Pong) = SomeMessageInSt Pong
 codec (ServerAgency TokPinged) (SomeMessage Stop) = error "unexpected message"
+
+---------------------------------------------------------------
+-- Compatability
+---------------------------------------------------------------
+
+downgradeServerV2ToV1 ::
+  forall m a.
+  Monad m =>
+  Peer V2.MyProtocol AsServer V2.StIdle m a ->
+  Peer MyProtocol AsServer StIdle m a
+downgradeServerV2ToV1 server2Top = goIdle server2Top
+  where
+    goIdle ::
+      Peer V2.MyProtocol AsServer V2.StIdle m a ->
+      Peer MyProtocol AsServer StIdle m a
+    goIdle server2 = case server2 of
+      Effect eff -> Effect (goIdle <$> eff)
+      Await (ClientAgency V2.TokIdle) server2' ->
+        Await
+          (ClientAgency TokIdle)
+          ( \msg1 -> case msg1 of
+              Ping -> goPinged (server2' V2.Ping)
+              Stop -> goDone (server2' V2.Stop)
+          )
+
+    goDone ::
+      Peer V2.MyProtocol AsServer V2.StDone m a ->
+      Peer MyProtocol 'AsServer StDone m a
+    goDone server2 = case server2 of
+      Effect eff -> Effect (goDone <$> eff)
+      Done _ a -> Done TokDone a
+
+    goPinged ::
+      Peer V2.MyProtocol AsServer V2.StPinged m a ->
+      Peer MyProtocol AsServer StPinged m a
+    goPinged server2 = case server2 of
+      Effect eff -> Effect (goPinged <$> eff)
+      Yield (ServerAgency V2.TokPinged) msg server2' -> case msg of
+        V2.Pong ->
+          Yield
+            (ServerAgency TokPinged)
+            Pong
+            (goIdle server2')
+
+-- upgradeClientV1ToV2 ::
+--   forall m a.
+--   (Typeable a, Monad m) =>
+--   Peer V1.MyProtocol AsClient V1.StIdle m a ->
+--   Peer V2.MyProtocol AsClient StIdle m a
+-- upgradeClientV1ToV2 server1Top = goIdle server1Top
+--   where
+--     goIdle ::
+--       Peer V1.MyProtocol AsClient V1.StIdle m a ->
+--       Peer V2.MyProtocol AsClient StIdle m a
+--     goIdle client1 = case client1 of
+--       Effect eff -> Effect (goIdle <$> eff)
+--       Yield (ClientAgency _) msg client1' -> case msg of
+--         V1.Ping -> Yield (ClientAgency TokIdle) Ping (goPinged client1')
+--         V1.Stop -> Yield (ClientAgency TokIdle) Stop (goStopped client1')
+--       DowngradeVersion v peer -> DowngradeVersion v peer
+--       UpgradeVersion v peerUp peerAlt -> undefined
+
+--     goPinged ::
+--       Peer V1.MyProtocol AsClient V1.StPinged m a ->
+--       Peer V2.MyProtocol AsClient StPinged m a
+--     goPinged client1 = case client1 of
+--       Effect eff -> Effect (goPinged <$> eff)
+--       Await (ServerAgency V1.TokPinged) client1' ->
+--         Await
+--           (ServerAgency TokPinged)
+--           ( \msg1 -> case msg1 of
+--               Pong -> goIdle (client1' V1.Pong)
+--           )
+
+--     goStopped ::
+--       Peer V1.MyProtocol AsClient V1.StDone m a ->
+--       Peer V2.MyProtocol AsClient StDone m a
+--     goStopped client1 = case client1 of
+--       Effect eff -> Effect (goStopped <$> eff)
+--       Done V1.TokDone a -> Done TokDone a
+
+type instance UpgradeProtocol MyProtocol = V2.MyProtocol
+
+$(return [])
+
+instance Upgradeable AsClient StIdle where
+  type UpgradeSt AsClient StIdle = V2.StIdle
+  upgradePeer client1 = case client1 of
+    Effect eff -> Effect (upgradePeer <$> eff)
+    Yield (ClientAgency _) msg client1' -> case msg of
+      Ping -> Yield (ClientAgency V2.TokIdle) V2.Ping (upgradePeer client1')
+      Stop -> Yield (ClientAgency V2.TokIdle) V2.Stop (upgradePeer client1')
+    DowngradeVersion path peer -> DowngradeVersion (appendUpgradePath path) peer
+    UpgradeVersion path peerUp peerAlt -> case path of
+      UpgradeComplete -> upgradePeer peerUp
+      UpgradePath path' ->
+        UpgradeVersion
+          path'
+          peerUp
+          (upgradePeer peerAlt)

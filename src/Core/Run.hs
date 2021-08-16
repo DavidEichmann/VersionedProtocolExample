@@ -44,12 +44,16 @@ data SomePeer r a
       (MessageDecoder protocol)
       (Peer protocol r (st :: protocol) IO a)
 
-data SomeDecoderAndUpgradePath r st
+data SomeDecoderAndUpgradePath r (st :: protocol)
   = forall protocol' (st' :: protocol').
-    (S.Serialise (SomeMessage protocol'), Protocol protocol') =>
+    ( S.Serialise (SomeMessage protocol'),
+      Protocol protocol',
+      HasUpgradePath r protocol st protocol'
+    ) =>
     SomeDecoderAndUpgradePath
       (MessageDecoder protocol')
-      (UpgradePath r st st')
+
+-- (UpgradePath r protocol st protocol')
 
 newtype ProtocolVersion = ProtocolVersion Int
 
@@ -90,7 +94,9 @@ handShake (ProtocolVersion minA) (ProtocolVersion maxA) socket = do
 
 runClient ::
   forall pPeer st a.
-  (Protocol pPeer, Typeable a) =>
+  ( Protocol pPeer,
+    Typeable a
+  ) =>
   -- | Min protocol version supported
   ProtocolVersion ->
   -- | Max protocol version supported
@@ -103,12 +109,11 @@ runClient minVersion maxVersion getUpgradePath peer =
     putStrLn $ "Connection established to " ++ show remoteAddr
     negotiatedVersion <- handShake minVersion maxVersion connectionSocket
     case getUpgradePath negotiatedVersion of
-      SomeDecoderAndUpgradePath msgDecoder path ->
+      SomeDecoderAndUpgradePath msgDecoder ->
         runPeer
           msgDecoder
           connectionSocket
           peer
-          path
 
 runServer ::
   -- | Min protocol version supported
@@ -127,22 +132,22 @@ runServer minVersion maxVersion mkPeer =
           msgDecoder
           connectionSocket
           peer
-          UpgradeComplete
 
 runPeer ::
   forall pPeer pWire (r :: PeerRole) (st :: pPeer) (st0Wire :: pWire) a.
   ( Protocol pWire,
     Typeable a,
     Typeable r,
-    S.Serialise (SomeMessage pWire)
+    S.Serialise (SomeMessage pWire),
+    HasUpgradePath r pPeer st pWire,
+    UpgradeStTo r pPeer st pWire ~ st0Wire
   ) =>
   MessageDecoder pWire ->
   Socket ->
   Peer pPeer r st IO a ->
   -- | Upgrade path from the peer to initial state of the on-the-wire protocol
-  UpgradePath r st st0Wire ->
   IO a
-runPeer msgDecoder socket peerTop pathTop = go BS.empty (applyUpgradePath pathTop peerTop)
+runPeer msgDecoder socket peerTop = go BS.empty (upgradePeerTo peerTop)
   where
     go ::
       forall (st' :: pWire).
@@ -175,9 +180,11 @@ runPeer msgDecoder socket peerTop pathTop = go BS.empty (applyUpgradePath pathTo
                   recvMsg recvBuff'' idecode'
                 S.Fail {} -> error "FAILED to deserialise a message!"
         (recvMsg recvBuff =<< stToIO S.deserialiseIncremental)
-      DowngradeVersion path peer' -> go recvBuff (applyUpgradePath path peer')
+      DowngradeVersion path peer' -> go recvBuff (upgradePeerTo peer')
       -- Peer is already at the wire version, so we can't use the upgraded peer
       -- unless it's equal to the wire version.
-      UpgradeVersion path (peerUp :: Peer pUp r stUp IO a) peerAlt -> case path of
-        UpgradeComplete -> go recvBuff peerUp
-        _ -> go recvBuff peerAlt
+      UpgradeVersion path (peerUp :: Peer pUp r stUp IO a) peerAlt -> error "TODO runPeer: UpgradeVersion"
+
+--  case path of
+--   UpgradeComplete -> go recvBuff peerUp
+--   _ -> go recvBuff peerAlt

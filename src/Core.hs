@@ -12,11 +12,13 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeInType #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -freduction-depth=1000 #-}
 
 -- | This module defines the core of the typed protocol framework.
 module Core
@@ -43,10 +45,12 @@ module Core
     -- * Up/Downgrading
     Upgradeable (..),
     HasUpgradePath (..),
+    UpgradeStTo,
+    UpgradeProtocol,
     UpgradePath (..),
-    upgradePeer',
-    applyUpgradePath,
-    appendUpgradePath,
+    -- upgradePeer',
+    -- applyUpgradePath,
+    -- appendUpgradePath,
 
     -- * Protocol proofs and tests
     -- $tests
@@ -56,6 +60,7 @@ where
 
 import Data.Kind
 import Data.Proxy
+import Data.Type.Equality
 import Data.Void (Void)
 
 -- $intro
@@ -471,7 +476,8 @@ data Peer ps (pr :: PeerRole) (st :: ps) m a where
     (forall st'. Message ps st st' -> Peer ps pr st' m a) ->
     Peer ps pr st m a
   UpgradeVersion ::
-    UpgradePath pr psA stA psB ->
+    HasUpgradePath pr psA stA psB =>
+    proxy stB -> -- UpgradePath pr psA stA psB ->
     Peer psB pr stB m a ->
     -- | alternative incase upgrade in not possible (i.e. the on-the-wire protocol is too low)
     Peer psA pr stA m a ->
@@ -479,7 +485,8 @@ data Peer ps (pr :: PeerRole) (st :: ps) m a where
   -- | In practice we never downgrade, we only upgrade hence the `Upgradeable'`
   -- constraint here.
   DowngradeVersion ::
-    UpgradePath pr psB stB psA ->
+    (UpgradeStTo pr psB stB psA ~ stA, HasUpgradePath pr psB stB psA) =>
+    proxy stB -> -- UpgradePath pr psB stB psA ->
     Peer psB pr stB m a ->
     Peer psA pr stA m a
 
@@ -489,70 +496,73 @@ deriving instance Functor m => Functor (Peer ps (pr :: PeerRole) (st :: ps) m)
 -- USING classes / type families
 --
 
--- | Upgrade to the next version from a fixed state
-type family UpgradeProtocol :: Type -> Type -- TODO sigh! GHC doesn't allow this in the Upgradeable where it should be!
+type family UpgradeStTo (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type) :: protocol' where
+  UpgradeStTo r p st p = st
+  UpgradeStTo r p st p' = UpgradeStTo r (UpgradeProtocol p) (UpgradeSt r st) p'
 
-type family AreEqual a b where
-  AreEqual a a = True
-  AreEqual _ _ = False
+-- | Upgrade to the next version from a fixed state
+type family UpgradeProtocol (p :: Type) :: Type -- TODO sigh! GHC doesn't allow this in the Upgradeable where it should be!
 
 class
   (Protocol protocol, Protocol (UpgradeProtocol protocol)) =>
   Upgradeable (r :: PeerRole) (st :: protocol)
   where
   type UpgradeSt r st :: UpgradeProtocol protocol
-  upgradePeer :: Monad m => Peer protocol r st m a -> Peer protocol' r st' m a
+  upgradePeer :: Monad m => Peer protocol r st m a -> Peer (UpgradeProtocol protocol) r (UpgradeSt r st) m a
 
-upgradePeer' ::
-  forall (r :: PeerRole) protocol (st :: protocol) protocol' m a.
-  (Monad m, HasUpgradePath r protocol st protocol') =>
-  Peer protocol r st m a ->
-  Peer protocol' r (UpgradeStTo r protocol st protocol') m a
-upgradePeer' = applyUpgradePath (upgradePath (Proxy @r) (Proxy @st) (Proxy @protocol'))
-
-type family UpgradeStTo (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type) :: protocol' where
-  UpgradeStTo r p st p = st
-  UpgradeStTo r p st p' = UpgradeStTo r (UpgradeProtocol p) (UpgradeSt r st) p'
+-- upgradePeer' ::
+--   forall (r :: PeerRole) protocol (st :: protocol) protocol' m a.
+--   (Monad m, HasUpgradePath r protocol st protocol') =>
+--   Peer protocol r st m a ->
+--   Peer protocol' r (UpgradeStTo r protocol st protocol') m a
+-- upgradePeer' = applyUpgradePath (upgradePath (Proxy @r) (Proxy @st) (Proxy @protocol'))
 
 class HasUpgradePath (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type) where
   upgradePath :: Proxy r -> Proxy st -> Proxy protocol' -> UpgradePath r protocol st protocol'
+  upgradePeerTo :: Monad m => Peer protocol r st m a -> Peer protocol' r (UpgradeStTo r protocol st protocol') m a
 
-instance HasUpgradePath' (AreEqual protocol protocol') r protocol st protocol' => HasUpgradePath r protocol st protocol' where
-  upgradePath _ _ _ = upgradePath' (Proxy @(AreEqual protocol protocol')) (Proxy @r) (Proxy @st) (Proxy @protocol')
+instance HasUpgradePath' (protocol == protocol') r protocol st protocol' => HasUpgradePath r protocol st protocol' where
+  upgradePath _ _ _ = upgradePath' (Proxy @(protocol == protocol')) (Proxy @r) (Proxy @st) (Proxy @protocol')
+  upgradePeerTo = upgradePeerTo' (Proxy @(protocol == protocol'))
 
-class HasUpgradePath' (done :: Bool) (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type) where
-  upgradePath' :: Proxy done -> Proxy r -> Proxy st -> Proxy protocol' -> UpgradePath r protocol st protocol'
+class HasUpgradePath' (protocolEqProtocol' :: Bool) (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type) where
+  upgradePath' :: Proxy protocolEqProtocol' -> Proxy r -> Proxy st -> Proxy protocol' -> UpgradePath r protocol st protocol'
+  upgradePeerTo' :: Monad m => Proxy protocolEqProtocol' -> Peer protocol r st m a -> Peer protocol' r (UpgradeStTo r protocol st protocol') m a
 
 instance HasUpgradePath' True r p st p where
   upgradePath' _ _ _ _ = UpgradeComplete
+  upgradePeerTo' _ peer = peer
 
-instance (Upgradeable r st, HasUpgradePath' (AreEqual (UpgradeProtocol p) p') r (UpgradeProtocol p) (UpgradeSt r st) p') => HasUpgradePath' False r p st p' where
-  upgradePath' _ _ _ p' = UpgradePath (upgradePath' (Proxy @(AreEqual (UpgradeProtocol p) p')) (Proxy @r) (Proxy @(UpgradeSt r st)) p')
+instance
+  ( Upgradeable r st,
+    HasUpgradePath' (UpgradeProtocol p == p') r (UpgradeProtocol p) (UpgradeSt r st) p',
+    (p == p') ~ False
+  ) =>
+  HasUpgradePath' False r p st p'
+  where
+  upgradePath' _ _ _ p' = UpgradePath (upgradePath' (Proxy @(UpgradeProtocol p == p')) (Proxy @r) (Proxy @(UpgradeSt r st)) p')
+  upgradePeerTo' _ peer = upgradePeerTo' (proxy @p') (upgradePeer peer)
 
 -- | Witness to an upgrade path
 data UpgradePath (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type) where
-  UpgradeComplete :: UpgradePath r protocol st protocol
-  UpgradePath :: (Upgradeable r st) => UpgradePath r (UpgradeProtocol protocol) (UpgradeSt r st) protocol' -> UpgradePath r protocol st protocol'
+  UpgradeComplete :: (protocol ~ protocol', (protocol == protocol') ~ True) => UpgradePath r protocol st protocol'
+  UpgradePath :: (Upgradeable r st, (protocol == protocol') ~ False) => UpgradePath r (UpgradeProtocol protocol) (UpgradeSt r st) protocol' -> UpgradePath r protocol st protocol'
 
-applyUpgradePath ::
-  forall (r :: PeerRole) (protocol :: Type) (protocol' :: Type) (st :: protocol) (st' :: protocol') m a.
-  Monad m =>
-  UpgradePath r protocol st protocol' ->
-  Peer protocol r st m a ->
-  Peer protocol' r st' m a
-applyUpgradePath path peer = case path of
-  UpgradeComplete -> peer
-  UpgradePath path' -> applyUpgradePath path' (upgradePeer peer)
+-- applyUpgradePath ::
+--   forall (r :: PeerRole) (protocol :: Type) (protocol' :: Type) (st :: protocol) m a.
+--   Monad m =>
+--   UpgradePath r protocol st protocol' ->
+--   Peer protocol r st m a ->
+--   Peer protocol' r (UpgradeStTo r protocol st protocol') m a
+-- applyUpgradePath path peer = case path of
+--   UpgradeComplete -> peer
+--   UpgradePath path' -> applyUpgradePath path' (upgradePeer peer :: Peer (UpgradeProtocol protocol) r (UpgradeSt st) m a)
 
-appendUpgradePath ::
-  forall (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type).
-  (AppendUpgradePathC r protocol st protocol') =>
-  UpgradePath r protocol st protocol' ->
-  UpgradePath r protocol st (UpgradeProtocol protocol')
-appendUpgradePath path = case path of
-  UpgradeComplete -> UpgradePath UpgradeComplete
-  UpgradePath up -> UpgradePath (appendUpgradePath up)
-
-type family AppendUpgradePathC (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type) :: Constraint where
-  AppendUpgradePathC r protocol st protocol = Upgradeable r st
-  AppendUpgradePathC r protocol st protocol' = AppendUpgradePathC r (UpgradeProtocol protocol) (UpgradeSt r st) protocol'
+-- appendUpgradePath ::
+--   forall (r :: PeerRole) (protocol :: Type) (st :: protocol) (protocol' :: Type).
+--   (Upgradeable r (UpgradeStTo r protocol st protocol')) =>
+--   UpgradePath r protocol st protocol' ->
+--   UpgradePath r protocol st (UpgradeProtocol protocol')
+-- appendUpgradePath path = case path of
+--   UpgradeComplete -> UpgradePath UpgradeComplete
+--   UpgradePath up -> UpgradePath (appendUpgradePath up)
