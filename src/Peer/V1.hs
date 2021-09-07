@@ -15,6 +15,7 @@
 module Peer.V1 where
 
 import Core
+import Data.Proxy
 import qualified Data.Text as T
 import Protocol.V1
 import qualified Protocol.V2 as V2
@@ -36,7 +37,7 @@ client = Effect $ do
       putStrLn "Trying to upgrade to V2 protocol and use Echo"
       return $
         UpgradeVersion
-          upgradePath
+          Proxy
           ( Effect $ do
               putStrLn "SUCCESS upgraded to V2 protocol... doing Echo"
               return $
@@ -50,16 +51,17 @@ client = Effect $ do
                             putStrLn $ "V2 Echo response: " ++ T.unpack respText
                             -- Change back to V1 protocol
                             return $
-                              DowngradeVersion
-                                upgradePath
-                                ( Yield
-                                    -- TODO there is a subtle implication that
-                                    -- the V1 and V2 StIdle are in
-                                    -- correspondance!
-                                    (ClientAgency TokIdle)
-                                    Stop
-                                    goDone
-                                )
+                              undefined
+                              -- DowngradeVersion
+                              --   Proxy
+                              --   ( Yield
+                              --       -- TODO there is a subtle implication that
+                              --       -- the V1 and V2 StIdle are in
+                              --       -- correspondance!
+                              --       (ClientAgency TokIdle)
+                              --       Stop
+                              --       goDone
+                              --   )
                       )
                   )
           )

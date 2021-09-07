@@ -13,7 +13,7 @@
 
 module Main where
 
-import Core (HasUpgradePath (upgradePath))
+import Core
 import Core.Run
 import qualified Peer.V1 as V1
 import qualified Peer.V2 as V2
@@ -52,7 +52,7 @@ main = do
               _ -> error $ "Unsupported version: " ++ show v
           )
         where
-          server1 = V2.downgradeServerV2ToV1 server2
+          server1 = V1.downgradeServerV2ToV1 server2
           server2 = V2.server
       -- In practice we'll only have this case i.e. the latest backwards
       -- compatible version of the server
@@ -69,7 +69,7 @@ main = do
               _ -> error $ "Unsupported version: " ++ show v
           )
         where
-          server1 = V2.downgradeServerV2ToV1 server2
+          server1 = V1.downgradeServerV2ToV1 server2
           server2 = V3.downgradeServerV3ToV2 server3
           server3 = V3.server
       _ -> error $ "Unsupported version: " ++ versionStr
@@ -81,9 +81,9 @@ main = do
           (ProtocolVersion 1)
           (ProtocolVersion (min maxV 3))
           ( \(ProtocolVersion v) -> case v of
-              1 -> SomeDecoderAndUpgradePath V1.codec upgradePath
-              2 -> SomeDecoderAndUpgradePath V2.codec upgradePath
-              3 -> SomeDecoderAndUpgradePath V3.codec upgradePath
+              1 -> SomeDecoderAndUpgradePath V1.codec -- upgradePath
+              2 -> SomeDecoderAndUpgradePath V2.codec -- upgradePath
+              3 -> SomeDecoderAndUpgradePath V3.codec -- upgradePath
               _ -> error $ "Unsupported version: " ++ show v
           )
           V1.client
@@ -92,8 +92,8 @@ main = do
           (ProtocolVersion 2)
           (ProtocolVersion (min maxV 3))
           ( \(ProtocolVersion v) -> case v of
-              2 -> SomeDecoderAndUpgradePath V2.codec upgradePath
-              3 -> SomeDecoderAndUpgradePath V3.codec upgradePath
+              2 -> SomeDecoderAndUpgradePath V2.codec -- upgradePath
+              3 -> SomeDecoderAndUpgradePath V3.codec -- upgradePath
               _ -> error $ "Unsupported version: " ++ show v
           )
           V2.client
@@ -104,7 +104,7 @@ main = do
           (ProtocolVersion 3)
           (ProtocolVersion (min maxV 3))
           ( \(ProtocolVersion v) -> case v of
-              3 -> SomeDecoderAndUpgradePath V3.codec upgradePath
+              3 -> SomeDecoderAndUpgradePath V3.codec -- upgradePath
               _ -> error $ "Unsupported version: " ++ show v
           )
           V3.client

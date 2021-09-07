@@ -152,22 +152,21 @@ downgradeServerV2ToV1 server2Top = goIdle server2Top
 --       Effect eff -> Effect (goStopped <$> eff)
 --       Done V1.TokDone a -> Done TokDone a
 
-type instance UpgradeProtocol MyProtocol = V2.MyProtocol
+type instance UpgradeProtocol1 MyProtocol = V2.MyProtocol
 
-$(return [])
+$(pure [])
 
-instance Upgradeable AsClient StIdle where
-  type UpgradeSt AsClient StIdle = V2.StIdle
+type instance UpgradeSt1 pr 'StIdle = V2.StIdle
+
+type instance UpgradeSt1 pr 'StPinged = V2.StPinged
+
+type instance UpgradeSt1 pr 'StDone = V2.StDone
+
+instance UpgradePeer AsClient StIdle V2.MyProtocol where
   upgradePeer client1 = case client1 of
-    Effect eff -> Effect (upgradePeer <$> eff)
+    Effect eff -> undefined -- Effect (upgradePeer <$> eff)
     Yield (ClientAgency _) msg client1' -> case msg of
-      Ping -> Yield (ClientAgency V2.TokIdle) V2.Ping (upgradePeer client1')
-      Stop -> Yield (ClientAgency V2.TokIdle) V2.Stop (upgradePeer client1')
-    DowngradeVersion path peer -> DowngradeVersion (appendUpgradePath path) peer
-    UpgradeVersion path peerUp peerAlt -> case path of
-      UpgradeComplete -> upgradePeer peerUp
-      UpgradePath path' ->
-        UpgradeVersion
-          path'
-          peerUp
-          (upgradePeer peerAlt)
+      Ping -> Yield (ClientAgency V2.TokIdle) V2.Ping undefined -- (upgradePeer client1')
+      Stop -> Yield (ClientAgency V2.TokIdle) V2.Stop undefined -- (upgradePeer client1')
+      -- DowngradeVersion proxy peer -> DowngradeVersion proxy peer
+    UpgradeVersion proxy peerUp peerAlt -> undefined -- UpgradeVersion proxy peerUp peerAlt

@@ -39,7 +39,10 @@ port = "8005"
 
 data SomePeer r a
   = forall protocol st.
-    (Protocol protocol, S.Serialise (SomeMessage protocol)) =>
+    ( Protocol protocol,
+      S.Serialise (SomeMessage protocol)
+      -- , UpgradePeer
+    ) =>
     SomePeer
       (MessageDecoder protocol)
       (Peer protocol r (st :: protocol) IO a)
@@ -48,7 +51,7 @@ data SomeDecoderAndUpgradePath r (st :: protocol)
   = forall protocol' (st' :: protocol').
     ( S.Serialise (SomeMessage protocol'),
       Protocol protocol',
-      HasUpgradePath r protocol st protocol'
+      UpgradePeer r st protocol'
     ) =>
     SomeDecoderAndUpgradePath
       (MessageDecoder protocol')
@@ -128,26 +131,27 @@ runServer minVersion maxVersion mkPeer =
     negotiatedVersion <- handShake minVersion maxVersion connectionSocket
     case mkPeer negotiatedVersion of
       SomePeer msgDecoder (peer :: Peer p r st m a) ->
-        runPeer
-          msgDecoder
-          connectionSocket
-          peer
+        undefined
+
+-- runPeer
+--   msgDecoder
+--   connectionSocket
+--   peer
 
 runPeer ::
-  forall pPeer pWire (r :: PeerRole) (st :: pPeer) (st0Wire :: pWire) a.
+  forall pPeer pWire (r :: PeerRole) (st :: pPeer) a.
   ( Protocol pWire,
     Typeable a,
     Typeable r,
     S.Serialise (SomeMessage pWire),
-    HasUpgradePath r pPeer st pWire,
-    UpgradeStTo r pPeer st pWire ~ st0Wire
+    UpgradePeer r st pWire
   ) =>
   MessageDecoder pWire ->
   Socket ->
   Peer pPeer r st IO a ->
   -- | Upgrade path from the peer to initial state of the on-the-wire protocol
   IO a
-runPeer msgDecoder socket peerTop = go BS.empty (upgradePeerTo peerTop)
+runPeer msgDecoder socket peerTop = go BS.empty (upgradePeer peerTop)
   where
     go ::
       forall (st' :: pWire).
@@ -180,7 +184,8 @@ runPeer msgDecoder socket peerTop = go BS.empty (upgradePeerTo peerTop)
                   recvMsg recvBuff'' idecode'
                 S.Fail {} -> error "FAILED to deserialise a message!"
         (recvMsg recvBuff =<< stToIO S.deserialiseIncremental)
-      DowngradeVersion path peer' -> go recvBuff (upgradePeerTo peer')
+      -- DowngradeVersion path peer' -> go recvBuff (upgradePeer peer')
+      --
       -- Peer is already at the wire version, so we can't use the upgraded peer
       -- unless it's equal to the wire version.
       UpgradeVersion path (peerUp :: Peer pUp r stUp IO a) peerAlt -> error "TODO runPeer: UpgradeVersion"
